@@ -342,7 +342,7 @@ class IntroScreen(tk.Frame):
     def open_main_app(self):
         """Открывает основное приложение"""
         if self.dont_show_again_var.get():
-            # TODO: Сохранить в конфиг
+            #TODO:Сохранить в конфиг
             pass
 
         self._fade_out()
