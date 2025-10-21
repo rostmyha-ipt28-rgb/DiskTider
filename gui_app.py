@@ -5,9 +5,8 @@ import os
 import json
 from collections import defaultdict
 from core import find_duplicates
-from utils import format_size, get_file_priority, delete_files_by_list
+from utils import format_size, get_file_priority, delete_files_by_list, TRASH_AVAILABLE
 from color_utils import lighten_color, get_contrast_color
-
 from logger import get_logger
 
 # Конфигурация
@@ -21,7 +20,7 @@ RISKY_PATH_KEYWORDS = [
     'Windows',
     os.path.join('AppData', 'Local'),
     os.path.join('Users', 'Default'),
-    'Library/Application Support',  # macOS
+    'Library/Application Support',
     'System Volume Information'
 ]
 
@@ -34,6 +33,7 @@ THEMES = {
         'primary': '#2563EB',
         'danger': '#DC2626',
         'success': '#16A34A',
+        'warning': '#F59E0B',
         'border': '#E0E0E0',
         'text_secondary': '#64748B',
         'treeview_bg': '#FFFFFF',
@@ -51,6 +51,7 @@ THEMES = {
         'primary': '#007ACC',
         'danger': '#F44747',
         'success': '#4EC9B0',
+        'warning': '#FFCC00',
         'border': '#3E3E42',
         'text_secondary': '#858585',
         'treeview_bg': '#252526',
@@ -140,6 +141,10 @@ class ModernButton(tk.Button):
         super().config(**kwargs)
 
 
+class StatusGlow:
+    pass
+
+
 class DiskTiderGUI(tk.Frame):
     def __init__(self, master):
         super().__init__(master)
@@ -153,10 +158,25 @@ class DiskTiderGUI(tk.Frame):
         self.music_var = tk.BooleanVar()
         self.recursive_var = tk.BooleanVar(value=True)
         self.permission_errors = 0
+
+        # >>> ДОБАВЛЕНО: Флаги для обработки конкурентного доступа
+        self.is_scanning = False
+        self.is_deleting = False
+        self.scan_cancelled = False
+        self.operation_lock = threading.Lock()
+        # <<<
+
         self._apply_theme()
         self.pack(fill="both", expand=True)
         self._create_widgets()
         self.load_settings()
+
+    # >>> ДОБАВЛЕНО: Метод для проверки отмены
+    def is_operation_cancelled(self):
+        """Проверяет, нужно ли отменить текущую операцию"""
+        return self.scan_cancelled
+
+    # <<<
 
     def _lighten_color(self, hex_color, factor):
         return lighten_color(hex_color, factor)
@@ -212,20 +232,15 @@ class DiskTiderGUI(tk.Frame):
             self.tree.tag_configure('keep', foreground=self.theme['success'])
             self.tree.tag_configure('delete', foreground=self.theme['danger'])
             self.tree.tag_configure('group', font=('Segoe UI', 10, 'bold'))
-
-            # Настройка стиля для рискованного файла
             self.tree.tag_configure('risk',
-                                    foreground=self.theme['risk_fg'],  # Оранжевый/желтый текст
-                                    background=self.theme['risk_bg_color'])  # Светлый/темный фон
+                                    foreground=self.theme['risk_fg'],
+                                    background=self.theme['risk_bg_color'])
 
     def _toggle_theme(self):
         self.current_theme = 'light' if self.current_theme == 'dark' else 'dark'
         self.theme = THEMES[self.current_theme]
         theme_icon = "🌙" if self.current_theme == 'light' else "🌞"
-
-        # >>> ИЗМЕНЕНИЕ: Установка BG кнопки в цвет фона (bg)
         self.theme_button.config(text=theme_icon, bg=self.theme['bg'], fg=self.theme['fg'])
-
         self._apply_theme()
         self._refresh_widgets()
         self._setup_treeview_hover()
@@ -271,10 +286,10 @@ class DiskTiderGUI(tk.Frame):
             self._update_widget_colors(child)
         if isinstance(widget, ModernButton):
             all_button_colors = [c for theme in THEMES.values() for c in
-                                 (theme['primary'], theme['success'], theme['danger'])]
+                                 (theme['primary'], theme['success'], theme['danger'], theme.get('warning', ''))]
             if widget.original_bg in all_button_colors:
                 new_bg = None
-                for key in ['primary', 'success', 'danger']:
+                for key in ['primary', 'success', 'danger', 'warning']:
                     if widget.original_bg in [THEMES[theme_name].get(key) for theme_name in THEMES]:
                         new_bg = self.theme[key]
                         break
@@ -296,8 +311,11 @@ class DiskTiderGUI(tk.Frame):
 
     def _create_widgets(self):
         self.configure(bg=self.theme['bg'])
+
+        # Верхняя панель
         top_frame = tk.Frame(self, bg=self.theme['bg'])
         top_frame.pack(fill="x", padx=20, pady=(20, 0))
+
         title_label = tk.Label(
             top_frame,
             text="DiskTider",
@@ -306,6 +324,7 @@ class DiskTiderGUI(tk.Frame):
             fg=self.theme['primary']
         )
         title_label.pack(side="left")
+
         subtitle_label = tk.Label(
             top_frame,
             text=" • Поиск и удаление дубликатов",
@@ -314,14 +333,13 @@ class DiskTiderGUI(tk.Frame):
             fg=self.theme['text_secondary']
         )
         subtitle_label.pack(side="left", pady=5)
-        theme_icon = "🌙" if self.current_theme == 'light' else "🌞"
 
-        # >>> ИЗМЕНЕНИЕ: Установка BG кнопки в цвет фона (bg)
+        theme_icon = "🌙" if self.current_theme == 'light' else "🌞"
         self.theme_button = tk.Button(
             top_frame,
             text=theme_icon,
             font=('Segoe UI Emoji', 16),
-            bg=self.theme['bg'],  # <-- ИЗМЕНЕНО с self.theme['surface']
+            bg=self.theme['bg'],
             fg=self.theme['fg'],
             relief=tk.FLAT,
             borderwidth=0,
@@ -336,7 +354,6 @@ class DiskTiderGUI(tk.Frame):
             self.theme_button.config(bg=self.theme['hover'])
 
         def theme_btn_leave(e):
-            # >>> ИЗМЕНЕНИЕ: Возвращаем кнопку в цвет фона (bg)
             self.theme_button.config(bg=self.theme['bg'])
 
         self.theme_button.bind('<Enter>', theme_btn_enter)
@@ -344,8 +361,11 @@ class DiskTiderGUI(tk.Frame):
 
         separator1 = tk.Frame(self, height=1, bg=self.theme['border'])
         separator1.pack(fill="x", padx=20, pady=15)
+
+        # Секция выбора директории
         dir_section = tk.Frame(self, bg=self.theme['bg'])
         dir_section.pack(fill="x", padx=20, pady=10)
+
         dir_label = tk.Label(
             dir_section,
             text="📁 Папка для сканирования",
@@ -354,8 +374,10 @@ class DiskTiderGUI(tk.Frame):
             fg=self.theme['fg']
         )
         dir_label.pack(anchor="w", pady=(0, 5))
+
         dir_input_frame = tk.Frame(dir_section, bg=self.theme['bg'])
         dir_input_frame.pack(fill="x")
+
         self.dir_entry = tk.Entry(
             dir_input_frame,
             font=('Segoe UI', 10),
@@ -369,6 +391,7 @@ class DiskTiderGUI(tk.Frame):
             highlightcolor=self.theme['primary']
         )
         self.dir_entry.pack(side="left", fill="x", expand=True, ipady=8, padx=(0, 10))
+
         browse_button = ModernButton(
             dir_input_frame,
             text="📂 Обзор",
@@ -377,8 +400,11 @@ class DiskTiderGUI(tk.Frame):
             command=self._browse_directory
         )
         browse_button.pack(side="left")
+
+        # Опции сканирования
         options_section = tk.Frame(self, bg=self.theme['bg'])
         options_section.pack(fill="x", padx=20, pady=10)
+
         music_check = tk.Checkbutton(
             options_section,
             text="🎵 Только музыкальные файлы (.mp3, .flac, .wav и т.д.)",
@@ -394,6 +420,7 @@ class DiskTiderGUI(tk.Frame):
             cursor='hand2'
         )
         music_check.pack(side="left", padx=(0, 20))
+
         recursive_check = tk.Checkbutton(
             options_section,
             text="🔄 Сканировать вложенные папки",
@@ -409,16 +436,35 @@ class DiskTiderGUI(tk.Frame):
             cursor='hand2'
         )
         recursive_check.pack(side="left")
+
+        # >>> ДОБАВЛЕНО: Кнопка отмены
+        button_container = tk.Frame(options_section, bg=self.theme['bg'])
+        button_container.pack(side="right")
+
         self.scan_button = ModernButton(
-            options_section,
+            button_container,
             text="▶ Сканировать",
             bg=self.theme['success'],
             fg='#FFFFFF',
             command=self._start_scan_thread
         )
-        self.scan_button.pack(side="right")
+        self.scan_button.pack(side="left", padx=(0, 5))
+
+        self.cancel_button = ModernButton(
+            button_container,
+            text="⏹ Отменить",
+            bg=self.theme['danger'],
+            fg='#FFFFFF',
+            command=self._cancel_operation,
+            state=tk.DISABLED
+        )
+        self.cancel_button.pack(side="left")
+        # <<<
+
         separator2 = tk.Frame(self, height=1, bg=self.theme['border'])
         separator2.pack(fill="x", padx=20, pady=15)
+
+        # Заголовок результатов
         results_label = tk.Label(
             self,
             text="📊 Найденные дубликаты",
@@ -427,12 +473,14 @@ class DiskTiderGUI(tk.Frame):
             fg=self.theme['fg']
         )
         results_label.pack(anchor="w", padx=20, pady=(0, 5))
+
+        # Treeview с результатами
         self.tree_container = tk.Frame(self, bg=self.theme['border'], borderwidth=1, relief='solid')
         self.tree_container.pack(fill="both", expand=True, padx=20, pady=(0, 10))
+
         scrollbar = ttk.Scrollbar(self.tree_container)
         scrollbar.pack(side="right", fill="y")
 
-        # Добавлен новый столбец 'Risk'
         self.tree = ttk.Treeview(
             self.tree_container,
             columns=('Status', 'Risk', 'Size', 'Path'),
@@ -442,6 +490,7 @@ class DiskTiderGUI(tk.Frame):
         )
         self.tree.pack(side="left", fill="both", expand=True)
         scrollbar.config(command=self.tree.yview)
+
         self.tree.heading('#0', text='Группа')
         self.tree.heading('Status', text='Действие')
         self.tree.heading('Risk', text='Риск')
@@ -460,13 +509,17 @@ class DiskTiderGUI(tk.Frame):
         self.tree.tag_configure('group', font=('Segoe UI', 10, 'bold'))
         self._setup_treeview_hover()
 
-        # Нижняя панель
+        # Нижняя панель с кнопками удаления
         bottom_frame = tk.Frame(self, bg=self.theme['bg'])
         bottom_frame.pack(fill="x", padx=20, pady=(0, 20))
 
-        # Обновление safety_label для необратимого удаления
-        safety_text = "⚠️ УДАЛЕНИЕ БУДЕТ НЕОБРАТИМЫМ!"
-        safety_color = self.theme['danger']
+        # >>> ИЗМЕНЕНО: Добавлено предупреждение о send2trash
+        if TRASH_AVAILABLE:
+            safety_text = "✓ send2trash доступен - файлы можно восстановить из корзины"
+            safety_color = self.theme['success']
+        else:
+            safety_text = "⚠️ send2trash недоступен - удаление будет НЕОБРАТИМЫМ!"
+            safety_color = self.theme['danger']
 
         safety_label = tk.Label(
             bottom_frame,
@@ -477,19 +530,50 @@ class DiskTiderGUI(tk.Frame):
         )
         safety_label.pack(side="left")
 
+        # >>> ДОБАВЛЕНО: Кнопки для разных режимов удаления
+        delete_buttons_frame = tk.Frame(bottom_frame, bg=self.theme['bg'])
+        delete_buttons_frame.pack(side="right")
+
+        self.preview_button = ModernButton(
+            delete_buttons_frame,
+            text="👁 Предпросмотр",
+            bg=self.theme['warning'],
+            fg='#FFFFFF',
+            font=('Segoe UI', 10, 'bold'),
+            command=lambda: self._start_delete_thread(dry_run=True),
+            state=tk.DISABLED
+        )
+        self.preview_button.pack(side="left", padx=(0, 5))
+
+        if TRASH_AVAILABLE:
+            self.trash_button = ModernButton(
+                delete_buttons_frame,
+                text="🗑 В корзину",
+                bg=self.theme['primary'],
+                fg='#FFFFFF',
+                font=('Segoe UI', 10, 'bold'),
+                command=lambda: self._start_delete_thread(mode='trash'),
+                state=tk.DISABLED
+            )
+            self.trash_button.pack(side="left", padx=(0, 5))
+
         self.delete_button = ModernButton(
-            bottom_frame,
-            text="🗑 Удалить выбранные",
+            delete_buttons_frame,
+            text="❌ Удалить навсегда",
             bg=self.theme['danger'],
             fg='#FFFFFF',
             font=('Segoe UI', 10, 'bold'),
-            command=self._start_delete_thread,
+            command=lambda: self._start_delete_thread(mode='delete'),
             state=tk.DISABLED
         )
-        self.delete_button.pack(side="right")
+        self.delete_button.pack(side="left")
+        # <<<
+
+        # Статус-бар
         status_frame = tk.Frame(self, bg=self.theme['surface'], height=30)
         status_frame.pack(fill="x", side="bottom")
         status_frame.pack_propagate(False)
+
         status_label = tk.Label(
             status_frame,
             textvariable=self.status_var,
@@ -499,12 +583,24 @@ class DiskTiderGUI(tk.Frame):
             anchor="w"
         )
         status_label.pack(fill="both", padx=10, pady=5)
+
         self.status_glow = StatusGlow(
             self,
             status_frame,
             self.theme['surface'],
             self.theme['primary']
         )
+
+    # >>> ДОБАВЛЕНО: Метод отмены операции
+    def _cancel_operation(self):
+        """Отменяет текущую операцию сканирования"""
+        if self.is_scanning:
+            self.scan_cancelled = True
+            self.status_var.set("⏹ Отмена операции...")
+            self.logger.info("Пользователь запросил отмену операции")
+            self.cancel_button.config(state=tk.DISABLED)
+
+    # <<<
 
     def save_settings(self):
         settings = {
@@ -536,77 +632,131 @@ class DiskTiderGUI(tk.Frame):
 
     def _start_scan_thread(self):
         directory = self.dir_entry.get().strip()
+
         if not directory or not os.path.isdir(directory):
             messagebox.showerror("Ошибка", "Укажите корректную папку для сканирования")
             return
-        if 'Chrome\\User Data' in directory.replace(os.sep, '\\') or 'AppData' in directory.replace(os.sep, '\\'):
-            messagebox.showwarning(
-                "Предупреждение",
-                "Сканирование системных папок (например, AppData или Chrome\\User Data) может вызвать ошибки доступа. "
-                "Закройте Google Chrome и выберите пользовательскую папку, например, 'Документы' или 'Музыка'."
-            )
-        if self.scan_button['state'] == tk.DISABLED:
-            self.logger.info("GUI: Сканирование уже выполняется, игнорируем повторный запуск")
-            return
-        self.logger.info(f"GUI: Попытка запуска сканирования для директории: {directory}")
+
+        # >>> ДОБАВЛЕНО: Проверка конкурентного доступа
+        with self.operation_lock:
+            if self.is_scanning or self.is_deleting:
+                messagebox.showwarning(
+                    "Операция выполняется",
+                    "Дождитесь завершения текущей операции"
+                )
+                return
+
+            self.is_scanning = True
+            self.scan_cancelled = False
+        # <<<
+
+        self.logger.info(f"GUI: Запуск сканирования для директории: {directory}")
         self.status_var.set("🔍 Сканирование (Этап 1: по размеру)...")
+
         if self.status_glow:
             self.status_glow.start_glow()
-        self.scan_button.config(text="Сканирование", state=tk.DISABLED)
+
+        self.scan_button.config(text="⏳ Сканирование...", state=tk.DISABLED)
         self.scan_button.start_glow(self.theme['success'], self._lighten_color(self.theme['success'], 0.2))
+
+        # >>> ДОБАВЛЕНО: Активация кнопки отмены
+        self.cancel_button.config(state=tk.NORMAL)
+        # <<<
+
         self.delete_button.config(state=tk.DISABLED)
+        if hasattr(self, 'preview_button'):
+            self.preview_button.config(state=tk.DISABLED)
+        if hasattr(self, 'trash_button'):
+            self.trash_button.config(state=tk.DISABLED)
+
         self.tree.delete(*self.tree.get_children())
+
         extensions = MUSIC_EXTENSIONS if self.music_var.get() else None
-
         recursive = self.recursive_var.get()
-        scan_thread = threading.Thread(target=self._run_scan, args=(directory, extensions, recursive), daemon=True)
 
+        scan_thread = threading.Thread(
+            target=self._run_scan,
+            args=(directory, extensions, recursive),
+            daemon=True
+        )
         scan_thread.start()
         self.save_settings()
 
     def _run_scan(self, directory, extensions, recursive):
         self.logger.info(f"ПОТОК: Сканирование начато. Директория: {directory}, Рекурсивное: {recursive}")
         self.permission_errors = 0
+
         try:
-            duplicates = find_duplicates(directory, extensions, recursive, gui=self)
-            self.logger.info(f"ПОТОК: Сканирование завершено. Найдено групп: {len(duplicates)}")
-            self.master.after(0, lambda: self._show_results(duplicates))
+            # >>> ИЗМЕНЕНО: Передаём cancel_flag в find_duplicates
+            duplicates = find_duplicates(
+                directory,
+                extensions,
+                recursive,
+                gui=self,
+                cancel_flag=self.is_operation_cancelled
+            )
+            # <<<
+
+            if self.scan_cancelled:
+                self.logger.info("ПОТОК: Сканирование отменено")
+                self.master.after(0, lambda: self._show_scan_cancelled())
+            else:
+                self.logger.info(f"ПОТОК: Сканирование завершено. Найдено групп: {len(duplicates)}")
+                self.master.after(0, lambda: self._show_results(duplicates))
+
         except Exception as error:
             self.logger.error(f"ПОТОК: Критическая ошибка сканирования: {error}")
-            self.master.after(0, lambda: self._show_error("Ошибка сканирования (Поток)", str(error)))
+            # >>> ИСПРАВЛЕНИЕ: Используем аргумент по умолчанию для надежной передачи error в лямбда-функцию
+            self.master.after(0, lambda err=error: self._show_error("Ошибка сканирования (Поток)", str(err)))
+            # <<<
+        finally:
+            # >>> ДОБАВЛЕНО: Сброс флага сканирования
+            with self.operation_lock:
+                self.is_scanning = False
+            # <<<
+
+    # >>> ДОБАВЛЕНО: Обработка отмены сканирования
+    def _show_scan_cancelled(self):
+        """Обработка отменённого сканирования"""
+        if self.status_glow:
+            self.status_glow.stop_glow()
+
+        self.scan_button.stop_glow()
+        self.scan_button.config(text="▶ Сканировать", state=tk.NORMAL)
+        self.cancel_button.config(state=tk.DISABLED)
+
+        self.status_var.set("⏹ Сканирование отменено пользователем")
+        self.tree.delete(*self.tree.get_children())
+
+    # <<<
 
     def _show_results(self, duplicates):
         self.logger.info(f"GUI: Получены результаты. Групп дубликатов: {len(duplicates)}")
         self.tree.delete(*self.tree.get_children())
         self.duplicates_data = duplicates
+
         total_duplicates = 0
         total_space = 0
+
         if duplicates:
             self.logger.debug("GUI: Заполнение Treeview дубликатами")
 
-            # СОРТИРОВКА ГРУПП ПО РАЗМЕРУ ФАЙЛА-ОРИГИНАЛА (ПО УБЫВАНИЮ)
+            # Сортировка групп по размеру
             processed_groups = []
             for file_hash, files in duplicates.items():
-                # 1. Сортируем файлы в группе по приоритету, чтобы определить "оригинал"
                 files_sorted_by_priority = sorted(files, key=lambda x: get_file_priority(x['name']))
-
-                # 2. Размер файла, который будет сохранен (самый высокий приоритет)
                 keep_size = files_sorted_by_priority[0]['size'] if files_sorted_by_priority else 0
-
-                # Сохраняем данные группы и ключ сортировки
                 processed_groups.append((file_hash, files, keep_size))
 
-            # 3. Сортируем группы по размеру (keep_size) по убыванию (самые большие первыми)
             processed_groups.sort(key=lambda x: x[2], reverse=True)
 
-            # --- Начало итерации по ОТСОРТИРОВАННЫМ группам ---
             for i, (file_hash, files, keep_size) in enumerate(processed_groups, 1):
-                # На этом этапе, files - это список файлов, который нужно отсортировать для отображения
                 files_sorted = sorted(files, key=lambda x: get_file_priority(x['name']))
 
                 group_size = format_size(files_sorted[0]['size'])
                 wasted_space = files_sorted[0]['size'] * (len(files_sorted) - 1)
                 total_space += wasted_space
+
                 group_id = self.tree.insert(
                     '',
                     tk.END,
@@ -615,16 +765,15 @@ class DiskTiderGUI(tk.Frame):
                     tags=('group',),
                     open=False
                 )
+
                 for j, file_info in enumerate(files_sorted):
                     status = "Сохранить" if j == 0 else "Удалить"
                     tag_status = 'keep' if j == 0 else 'delete'
 
-                    # Проверка и маркировка риска
                     risk_status = self._check_file_risk(file_info['path'])
                     risk_indicator = "🚨 РИСК" if risk_status == 'RISK' else "🟢 ОК"
                     tag_risk = 'risk' if risk_status == 'RISK' else ''
 
-                    # tags: (tag_risk, tag_status, file_hash, size_bytes)
                     final_tags = (tag_risk, tag_status, file_hash, str(file_info['size']))
 
                     if j > 0:
@@ -637,33 +786,51 @@ class DiskTiderGUI(tk.Frame):
                         values=(status, risk_indicator, format_size(file_info['size']), file_info['path']),
                         tags=final_tags
                     )
-            # --- Конец итерации ---
 
         if total_duplicates > 0:
             status_text = f"✓ Найдено: {len(duplicates)} групп • {total_duplicates} дубликатов • {format_size(total_space)} можно освободить"
             if self.permission_errors > 0:
-                status_text += f"\n⚠ {self.permission_errors} файлов пропущено из-за ограничений доступа"
+                status_text += f" | ⚠ {self.permission_errors} файлов пропущено"
             self.status_var.set(status_text)
+
             self.delete_button.config(state=tk.NORMAL)
+            if hasattr(self, 'preview_button'):
+                self.preview_button.config(state=tk.NORMAL)
+            if hasattr(self, 'trash_button'):
+                self.trash_button.config(state=tk.NORMAL)
         else:
             status_text = "✨ Дубликаты не найдены. Все чисто."
             if self.permission_errors > 0:
-                status_text += f"\n⚠ {self.permission_errors} файлов пропущено из-за ограничений доступа"
+                status_text += f" | ⚠ {self.permission_errors} файлов пропущено"
             self.status_var.set(status_text)
+
             self.delete_button.config(state=tk.DISABLED)
-            messagebox.showinfo("Результат сканирования",
-                                "Дубликаты не найдены. Проверьте другую директорию или настройки фильтра.")
+            if hasattr(self, 'preview_button'):
+                self.preview_button.config(state=tk.DISABLED)
+            if hasattr(self, 'trash_button'):
+                self.trash_button.config(state=tk.DISABLED)
+
         if self.status_glow:
             self.status_glow.stop_glow()
+
         self.scan_button.stop_glow()
         self.scan_button.config(text="▶ Сканировать", state=tk.NORMAL)
-        self.logger.debug("GUI: Обновление завершено")
+        self.cancel_button.config(state=tk.DISABLED)
 
     def _show_error(self, title, message):
         if self.status_glow:
             self.status_glow.stop_glow()
+
         self.scan_button.stop_glow()
         self.scan_button.config(text="▶ Сканировать", state=tk.NORMAL)
+        self.cancel_button.config(state=tk.DISABLED)
+
+        # >>> ДОБАВЛЕНО: Сброс флага сканирования при ошибке
+        with self.operation_lock:
+            self.is_scanning = False
+            self.is_deleting = False
+        # <<<
+
         messagebox.showerror(title, message)
         self.status_var.set("✗ Ошибка при выполнении операции")
 
@@ -671,14 +838,18 @@ class DiskTiderGUI(tk.Frame):
         item_id = self.tree.identify_row(event.y)
         if not item_id or not self.tree.parent(item_id):
             return
+
         parent_id = self.tree.parent(item_id)
         children = self.tree.get_children(parent_id)
+
         if item_id == children[0]:
             messagebox.showinfo("Информация", "Первый файл в группе помечен как оригинал и не может быть удален")
             return
+
         current_status = self.tree.item(item_id, 'values')[0]
         new_status = "Удалить" if current_status == "Сохранить" else "Сохранить"
         new_tag = 'delete' if new_status == "Удалить" else 'keep'
+
         values = list(self.tree.item(item_id, 'values'))
         values[0] = new_status
         tags = self.tree.item(item_id, 'tags')
@@ -688,64 +859,190 @@ class DiskTiderGUI(tk.Frame):
 
         self.tree.item(item_id, values=values, tags=updated_tags)
 
-    def _start_delete_thread(self):
+    def _start_delete_thread(self, mode='delete', dry_run=False):
+        """
+        Запускает удаление файлов в отдельном потоке
+
+        Args:
+            mode: 'trash' (в корзину) или 'delete' (навсегда)
+            dry_run: если True, только показывает что будет удалено
+        """
+        # >>> ДОБАВЛЕНО: Проверка конкурентного доступа
+        with self.operation_lock:
+            if self.is_scanning or self.is_deleting:
+                messagebox.showwarning(
+                    "Операция выполняется",
+                    "Дождитесь завершения текущей операции"
+                )
+                return
+
+            if not dry_run:
+                self.is_deleting = True
+        # <<<
+
         files_to_delete = []
+
         for group_id in self.tree.get_children():
             for item_id in self.tree.get_children(group_id):
                 status, risk_indicator, size_str_formatted, path = self.tree.item(item_id, 'values')
                 tags = self.tree.item(item_id, 'tags')
+
                 if status == "Удалить":
                     try:
-                        # Размер хранится в tags[3]
+                        # Размер хранится как строка в tags[3]
                         size_bytes = int(tags[3])
                     except (IndexError, ValueError):
                         self.logger.error(f"Ошибка извлечения размера для {path}. Пропуск.")
                         continue
+
                     files_to_delete.append({
                         'path': path,
                         'name': os.path.basename(path),
                         'size': size_bytes
                     })
+
         if not files_to_delete:
+            with self.operation_lock:
+                self.is_deleting = False
             messagebox.showinfo("Информация", "Нет файлов для удаления")
             return
 
         total_size = sum(f['size'] for f in files_to_delete)
 
-        # Текст подтверждения только для необратимого удаления
-        confirm_text = (
-            f"Удалить {len(files_to_delete)} файлов?\n"
-            f"Будет освобождено: {format_size(total_size)}\n\n"
-            f"⚠️ УДАЛЕНИЕ БУДЕТ НЕОБРАТИМЫМ!"
-        )
+        # >>> ИЗМЕНЕНО: Разные сообщения для разных режимов
+        if dry_run:
+            confirm_text = (
+                f"🔍 РЕЖИМ ПРЕДПРОСМОТРА\n\n"
+                f"Будет помечено к удалению: {len(files_to_delete)} файлов\n"
+                f"Будет освобождено: {format_size(total_size)}\n\n"
+                f"Файлы НЕ будут удалены."
+            )
+            if not messagebox.askokcancel("Предпросмотр удаления", confirm_text):
+                with self.operation_lock:
+                    self.is_deleting = False
+                return
+        elif mode == 'trash' and TRASH_AVAILABLE:
+            confirm_text = (
+                f"Переместить {len(files_to_delete)} файлов в корзину?\n"
+                f"Будет освобождено: {format_size(total_size)}\n\n"
+                f"✓ Файлы можно будет восстановить из корзины"
+            )
+            if not messagebox.askyesno("Подтверждение", confirm_text):
+                with self.operation_lock:
+                    self.is_deleting = False
+                return
+        else:
+            confirm_text = (
+                f"Удалить {len(files_to_delete)} файлов НАВСЕГДА?\n"
+                f"Будет освобождено: {format_size(total_size)}\n\n"
+                f"⚠️ УДАЛЕНИЕ БУДЕТ НЕОБРАТИМЫМ!"
+            )
+            if not messagebox.askyesno("Подтверждение", confirm_text):
+                with self.operation_lock:
+                    self.is_deleting = False
+                return
+        # <<<
 
-        if not messagebox.askyesno("Подтверждение", confirm_text):
-            return
+        if dry_run:
+            self.status_var.set("🔍 Режим предпросмотра...")
+        elif mode == 'trash':
+            self.status_var.set("🗑 Перемещение в корзину...")
+        else:
+            self.status_var.set("❌ Удаление файлов...")
 
-        self.status_var.set("🗑 Удаление файлов...")
         self.delete_button.config(state=tk.DISABLED)
+        if hasattr(self, 'preview_button'):
+            self.preview_button.config(state=tk.DISABLED)
+        if hasattr(self, 'trash_button'):
+            self.trash_button.config(state=tk.DISABLED)
         self.scan_button.config(state=tk.DISABLED)
-        delete_thread = threading.Thread(target=self._run_delete, args=(files_to_delete,), daemon=True)
+
+        delete_thread = threading.Thread(
+            target=self._run_delete,
+            args=(files_to_delete, mode, dry_run),
+            daemon=True
+        )
         delete_thread.start()
 
-    def _run_delete(self, files_to_delete):
+    def _run_delete(self, files_to_delete, mode, dry_run):
         try:
-            deleted_count, freed_space_str = delete_files_by_list(files_to_delete)
-            self.master.after(0, lambda: self._show_delete_results(deleted_count, freed_space_str))
+            deleted_count, freed_space_str, errors = delete_files_by_list(
+                files_to_delete,
+                mode=mode,
+                dry_run=dry_run
+            )
+            self.master.after(0, lambda: self._show_delete_results(
+                deleted_count, freed_space_str, errors, mode, dry_run
+            ))
         except Exception as e:
+            self.logger.error(f"Ошибка удаления: {e}")  # Эту строку перемещаем внутрь except
             self.master.after(0, lambda: self._show_error("Ошибка удаления", str(e)))
-            self.logger.error(f"Ошибка удаления: {e}")
+        finally:
+            # >>> ИСПРАВЛЕНО: Блок finally на правильном уровне после try/except
+            # Сброс флага удаления
+            with self.operation_lock:
+                self.is_deleting = False
+            # <<<
 
-    def _show_delete_results(self, deleted_count, freed_space_str):
-        self.status_var.set(f"✓ Удалено: {deleted_count} файлов • Освобождено: {freed_space_str}")
-        messagebox.showinfo("Готово", f"Успешно удалено: {deleted_count} файлов\nОсвобождено: {freed_space_str}")
-        self.tree.delete(*self.tree.get_children())
-        self.duplicates_data = {}
-        self.delete_button.config(state=tk.DISABLED)
+    def _show_delete_results(self, deleted_count, freed_space_str, errors, mode, dry_run):
+        """Показывает результаты удаления"""
+
+        # >>> ИЗМЕНЕНО: Разные сообщения для разных режимов
+        if dry_run:
+            status_msg = f"🔍 Предпросмотр: {deleted_count} файлов | {freed_space_str}"
+            dialog_title = "Предпросмотр завершён"
+            dialog_msg = f"Будет удалено: {deleted_count} файлов\nБудет освобождено: {freed_space_str}"
+        elif mode == 'trash':
+            status_msg = f"✓ В корзину: {deleted_count} файлов | Освобождено: {freed_space_str}"
+            dialog_title = "Готово"
+            dialog_msg = f"Перемещено в корзину: {deleted_count} файлов\nОсвобождено: {freed_space_str}"
+        else:
+            status_msg = f"✓ Удалено навсегда: {deleted_count} файлов | Освобождено: {freed_space_str}"
+            dialog_title = "Готово"
+            dialog_msg = f"Удалено навсегда: {deleted_count} файлов\nОсвобождено: {freed_space_str}"
+
+        if errors:
+            status_msg += f" | ⚠ Ошибок: {len(errors)}"
+            dialog_msg += f"\n\n⚠ Ошибок при удалении: {len(errors)}"
+
+            # Показываем первые 5 ошибок
+            if len(errors) <= 5:
+                dialog_msg += "\n\n" + "\n".join(errors[:5])
+            else:
+                dialog_msg += "\n\n" + "\n".join(errors[:5]) + f"\n... и ещё {len(errors) - 5} ошибок"
+
+        self.status_var.set(status_msg)
+        # <<<
+
+        if not dry_run:
+            messagebox.showinfo(dialog_title, dialog_msg)
+            # Очищаем результаты после реального удаления
+            self.tree.delete(*self.tree.get_children())
+            self.duplicates_data = {}
+        else:
+            messagebox.showinfo(dialog_title, dialog_msg)
+
+        # Возвращаем кнопки в рабочее состояние
+        if not dry_run:
+            self.delete_button.config(state=tk.DISABLED)
+            if hasattr(self, 'preview_button'):
+                self.preview_button.config(state=tk.DISABLED)
+            if hasattr(self, 'trash_button'):
+                self.trash_button.config(state=tk.DISABLED)
+        else:
+            # После предпросмотра кнопки остаются активными
+            self.delete_button.config(state=tk.NORMAL)
+            if hasattr(self, 'preview_button'):
+                self.preview_button.config(state=tk.NORMAL)
+            if hasattr(self, 'trash_button'):
+                self.trash_button.config(state=tk.NORMAL)
+
         self.scan_button.config(state=tk.NORMAL)
 
 
 class StatusGlow:
+    """Класс для анимации свечения статус-бара"""
+
     def __init__(self, app_gui, status_frame, start_color, end_color):
         self.app_gui = app_gui
         self.master = app_gui.master
@@ -770,12 +1067,15 @@ class StatusGlow:
             for child in self.frame.winfo_children():
                 child.config(bg=current_theme['surface'])
             return
+
         self.counter += 1
         intensity = abs(10 - (self.counter % 20)) / 10
         color = self._interpolate_color(self.start_color, self.end_color, intensity)
         self.frame.config(bg=color)
+
         for child in self.frame.winfo_children():
             child.config(bg=color)
+
         self.frame.after(100, self._animate_glow)
 
     def _interpolate_color(self, hex1, hex2, factor):

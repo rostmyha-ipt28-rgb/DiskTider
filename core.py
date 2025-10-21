@@ -50,13 +50,17 @@ SKIP_DIRECTORIES = {
 # <<< КОНЕЦ ИЗМЕНЕНИЯ
 
 
-def calculate_file_hash(filepath, chunk_size=65536, gui=None):
+def calculate_file_hash(filepath, chunk_size=65536, gui=None, cancel_flag=None):
     """Вычисляет MD5 хеш файла"""
     logger = get_logger()
     md5_hash = hashlib.md5()
     try:
         with open(filepath, "rb") as f:
             while chunk := f.read(chunk_size):
+                # >>> ДОБАВЛЕНО: Проверка отмены во время хеширования
+                if cancel_flag and cancel_flag():
+                    return None
+                # <<<
                 md5_hash.update(chunk)
         return md5_hash.hexdigest()
     except PermissionError as e:
@@ -69,10 +73,11 @@ def calculate_file_hash(filepath, chunk_size=65536, gui=None):
         return None
 
 
-def find_duplicates(directory, extensions=None, recursive=True, gui=None):
+def find_duplicates(directory, extensions=None, recursive=True, gui=None, cancel_flag=None):
     """
     Находит дубликаты файлов в указанной директории.
     Поддерживает рекурсивное и нерекурсивное сканирование.
+    >>> ИЗМЕНЕНИЕ: Добавлен аргумент cancel_flag
     """
     logger = get_logger()
     logger.log_scan_start(directory, extensions)
@@ -82,6 +87,11 @@ def find_duplicates(directory, extensions=None, recursive=True, gui=None):
 
     if recursive:
         for root, dirs, files in os.walk(directory):
+            # >>> ДОБАВЛЕНО: Проверка отмены в цикле обхода папок
+            if cancel_flag and cancel_flag():
+                return {}  # Возвращаем пустой результат при отмене
+            # <<<
+
             # Пропускаем директории из SKIP_DIRECTORIES (с проверкой нижнего регистра)
             dirs[:] = [d for d in dirs if not any(
                 skip_dir.lower() in os.path.join(root, d).lower().replace(os.sep, '/') or d.lower() == skip_dir.lower()
@@ -110,6 +120,11 @@ def find_duplicates(directory, extensions=None, recursive=True, gui=None):
                     continue
     else:
         for filename in os.listdir(directory):
+            # >>> ДОБАВЛЕНО: Проверка отмены в нерекурсивном цикле
+            if cancel_flag and cancel_flag():
+                return {}
+            # <<<
+
             filepath = os.path.join(directory, filename)
             if os.path.isdir(filepath):
                 continue
@@ -135,6 +150,11 @@ def find_duplicates(directory, extensions=None, recursive=True, gui=None):
 
     logger.info(f"Этап 1 завершён. Проверено файлов: {total_files}")
 
+    # >>> ДОБАВЛЕНО: Финальная проверка отмены после Этапа 1
+    if cancel_flag and cancel_flag():
+        return {}
+    # <<<
+
     potential_duplicates = {size: files for size, files in files_by_size.items() if len(files) > 1}
 
     if not potential_duplicates:
@@ -148,7 +168,14 @@ def find_duplicates(directory, extensions=None, recursive=True, gui=None):
     hashes = defaultdict(list)
     for files in potential_duplicates.values():
         for file_info in files:
-            file_hash = calculate_file_hash(file_info['path'], gui=gui)
+            # >>> ДОБАВЛЕНО: Проверка отмены перед хешированием
+            if cancel_flag and cancel_flag():
+                return {}
+            # <<<
+
+            file_hash = calculate_file_hash(file_info['path'], gui=gui, cancel_flag=cancel_flag)
+
+            # Если хеш вернулся None (из-за ошибки или отмены), пропускаем
             if file_hash:
                 hashes[file_hash].append(file_info)
 
