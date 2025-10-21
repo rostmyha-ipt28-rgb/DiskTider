@@ -3,12 +3,52 @@ import hashlib
 from collections import defaultdict
 from logger import get_logger
 
-# Список директорий, которые следует пропускать
+# >>> ИЗМЕНЕНИЕ: Полный список директорий, которые следует пропускать
 SKIP_DIRECTORIES = {
-    'Service Worker', 'CacheStorage', 'Code Cache', 'Extensions',
+    # Общие системные/кэш пути
+    os.path.join('AppData', 'Local', 'Temp'),
+    os.path.join('AppData', 'Roaming'),
+    os.path.join('AppData', 'Local', 'Microsoft', 'Windows', 'INetCache'),
+    os.path.join('Local Settings', 'Temp'),  # Для старых версий Windows
+    os.path.join('Windows', 'Temp'),
+
+    # Кэш/Компоненты браузеров
     os.path.join('AppData', 'Local', 'Google', 'Chrome', 'User Data'),
-    os.path.join('AppData', 'Local', 'Temp')
+    'Service Worker',
+    'CacheStorage',
+    'Code Cache',
+    'Extensions',
+
+    # Системные и программные файлы Windows
+    'Program Files',
+    'Program Files (x86)',
+    '$RECYCLE.BIN',
+    'System Volume Information',
+    'Windows',
+    'System32',
+
+    # Игровые/Медиа библиотеки (Steam, Epic, т.п.)
+    'SteamLibrary',
+    os.path.join('steamapps', 'common'),
+    os.path.join('steamapps', 'workshop'),
+    'Epic Games',
+
+    # Разработка и виртуальные среды
+    '.git',
+    '.svn',
+    'node_modules',
+    'venv',
+
+    # macOS/Linux специфичные кэши
+    os.path.join('Library', 'Caches'),
+    '.Trash',
+    '.cache',
+    os.path.join('Users', 'Default')  # Системные профили
 }
+
+
+# <<< КОНЕЦ ИЗМЕНЕНИЯ
+
 
 def calculate_file_hash(filepath, chunk_size=65536, gui=None):
     """Вычисляет MD5 хеш файла"""
@@ -28,6 +68,7 @@ def calculate_file_hash(filepath, chunk_size=65536, gui=None):
         logger.error(f"Ошибка хеширования файла {filepath}: {e}")
         return None
 
+
 def find_duplicates(directory, extensions=None, recursive=True, gui=None):
     """
     Находит дубликаты файлов в указанной директории.
@@ -41,8 +82,11 @@ def find_duplicates(directory, extensions=None, recursive=True, gui=None):
 
     if recursive:
         for root, dirs, files in os.walk(directory):
-            # Пропускаем директории из SKIP_DIRECTORIES
-            dirs[:] = [d for d in dirs if not any(skip_dir in os.path.join(root, d) or d == skip_dir for skip_dir in SKIP_DIRECTORIES)]
+            # Пропускаем директории из SKIP_DIRECTORIES (с проверкой нижнего регистра)
+            dirs[:] = [d for d in dirs if not any(
+                skip_dir.lower() in os.path.join(root, d).lower().replace(os.sep, '/') or d.lower() == skip_dir.lower()
+                for skip_dir in SKIP_DIRECTORIES)]
+
             for filename in files:
                 filepath = os.path.join(root, filename)
                 if extensions and not any(filename.lower().endswith(ext.lower()) for ext in extensions):
@@ -100,6 +144,7 @@ def find_duplicates(directory, extensions=None, recursive=True, gui=None):
     files_to_hash_count = sum(len(files) for files in potential_duplicates.values())
     logger.info(f"Найдено потенциальных дубликатов: {files_to_hash_count} файлов в {len(potential_duplicates)} группах")
 
+    # === Этап 2: Хеширование для точного сравнения ===
     hashes = defaultdict(list)
     for files in potential_duplicates.values():
         for file_info in files:

@@ -6,11 +6,24 @@ import json
 from collections import defaultdict
 from core import find_duplicates
 from utils import format_size, get_file_priority, delete_files_by_list
+from color_utils import lighten_color, get_contrast_color
+
 from logger import get_logger
 
 # Конфигурация
 MUSIC_EXTENSIONS = ['.mp3', '.flac', '.wav', '.m4a', '.aac', '.ogg', '.wma']
-TRASH_AVAILABLE = False
+
+# Список ключевых слов для маркировки рискованных файлов в GUI
+RISKY_PATH_KEYWORDS = [
+    'SteamLibrary',
+    'Program Files',
+    'Program Files (x86)',
+    'Windows',
+    os.path.join('AppData', 'Local'),
+    os.path.join('Users', 'Default'),
+    'Library/Application Support',  # macOS
+    'System Volume Information'
+]
 
 THEMES = {
     'light': {
@@ -27,6 +40,8 @@ THEMES = {
         'treeview_fg': '#111827',
         'treeview_selected': '#E8F0FF',
         'hover': '#EEEEEE',
+        'risk_fg': '#92400E',
+        'risk_bg_color': '#FEF3C7',
     },
     'dark': {
         'bg': '#1E1E1E',
@@ -42,11 +57,15 @@ THEMES = {
         'treeview_fg': '#CCCCCC',
         'treeview_selected': '#094771',
         'hover': '#383838',
+        'risk_fg': '#FCD34D',
+        'risk_bg_color': '#443C22',
     }
 }
 
+
 class ModernButton(tk.Button):
     """Кастомная кнопка с плавной анимацией hover и glow"""
+
     def __init__(self, master, **kwargs):
         self.original_bg = kwargs.get('bg', 'SystemButtonFace')
         self.original_font = kwargs.pop('font', ('Segoe UI', 10))
@@ -69,12 +88,12 @@ class ModernButton(tk.Button):
         if self['state'] != 'disabled' and not self.is_glowing:
             all_danger_colors = [THEMES[t]['danger'] for t in THEMES]
             is_danger = self.original_bg in all_danger_colors
-            # Access _lighten_color or _darken_color from parent DiskTiderGUI
             parent = self.master
             while not isinstance(parent, DiskTiderGUI) and parent is not None:
                 parent = parent.master
             if parent:
-                self['bg'] = parent._darken_color(self.original_bg, 0.15) if is_danger else parent._lighten_color(self.original_bg, 0.15)
+                self['bg'] = parent._darken_color(self.original_bg, 0.15) if is_danger else parent._lighten_color(
+                    self.original_bg, 0.15)
 
     def _on_leave(self, e):
         if self['state'] != 'disabled' and not self.is_glowing:
@@ -120,6 +139,7 @@ class ModernButton(tk.Button):
             self.original_font = kwargs['font']
         super().config(**kwargs)
 
+
 class DiskTiderGUI(tk.Frame):
     def __init__(self, master):
         super().__init__(master)
@@ -139,16 +159,7 @@ class DiskTiderGUI(tk.Frame):
         self.load_settings()
 
     def _lighten_color(self, hex_color, factor):
-        try:
-            r = int(hex_color[1:3], 16)
-            g = int(hex_color[3:5], 16)
-            b = int(hex_color[5:7], 16)
-            r = min(255, int(r + (255 - r) * factor))
-            g = min(255, int(g + (255 - g) * factor))
-            b = min(255, int(b + (255 - b) * factor))
-            return f'#{r:02x}{g:02x}{b:02x}'
-        except:
-            return hex_color
+        return lighten_color(hex_color, factor)
 
     def _darken_color(self, hex_color, factor):
         try:
@@ -161,6 +172,15 @@ class DiskTiderGUI(tk.Frame):
             return f'#{r:02x}{g:02x}{b:02x}'
         except:
             return hex_color
+
+    def _check_file_risk(self, filepath):
+        """Проверяет, находится ли файл в рискованной системной/программной папке."""
+        filepath_lower = filepath.lower().replace(os.sep, '/')
+        for keyword in RISKY_PATH_KEYWORDS:
+            keyword_lower = keyword.lower().replace(os.sep, '/')
+            if keyword_lower in filepath_lower:
+                return 'RISK'
+        return 'SAFE'
 
     def _apply_theme(self):
         self.master.configure(bg=self.theme['bg'])
@@ -193,11 +213,19 @@ class DiskTiderGUI(tk.Frame):
             self.tree.tag_configure('delete', foreground=self.theme['danger'])
             self.tree.tag_configure('group', font=('Segoe UI', 10, 'bold'))
 
+            # Настройка стиля для рискованного файла
+            self.tree.tag_configure('risk',
+                                    foreground=self.theme['risk_fg'],  # Оранжевый/желтый текст
+                                    background=self.theme['risk_bg_color'])  # Светлый/темный фон
+
     def _toggle_theme(self):
         self.current_theme = 'light' if self.current_theme == 'dark' else 'dark'
         self.theme = THEMES[self.current_theme]
         theme_icon = "🌙" if self.current_theme == 'light' else "🌞"
-        self.theme_button.config(text=theme_icon, bg=self.theme['surface'], fg=self.theme['fg'])
+
+        # >>> ИЗМЕНЕНИЕ: Установка BG кнопки в цвет фона (bg)
+        self.theme_button.config(text=theme_icon, bg=self.theme['bg'], fg=self.theme['fg'])
+
         self._apply_theme()
         self._refresh_widgets()
         self._setup_treeview_hover()
@@ -242,7 +270,8 @@ class DiskTiderGUI(tk.Frame):
         for child in widget.winfo_children():
             self._update_widget_colors(child)
         if isinstance(widget, ModernButton):
-            all_button_colors = [c for theme in THEMES.values() for c in (theme['primary'], theme['success'], theme['danger'])]
+            all_button_colors = [c for theme in THEMES.values() for c in
+                                 (theme['primary'], theme['success'], theme['danger'])]
             if widget.original_bg in all_button_colors:
                 new_bg = None
                 for key in ['primary', 'success', 'danger']:
@@ -256,12 +285,7 @@ class DiskTiderGUI(tk.Frame):
                         widget.start_glow(new_bg, self._lighten_color(new_bg, 0.2))
 
     def _get_contrast_color(self, hex_color):
-        hex_color = hex_color.lstrip('#')
-        r = int(hex_color[0:2], 16)
-        g = int(hex_color[3:5], 16)
-        b = int(hex_color[5:7], 16)
-        luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255
-        return '#000000' if luminance > 0.5 else '#FFFFFF'
+        return get_contrast_color(hex_color)
 
     def _setup_treeview_hover(self):
         style = ttk.Style()
@@ -291,11 +315,13 @@ class DiskTiderGUI(tk.Frame):
         )
         subtitle_label.pack(side="left", pady=5)
         theme_icon = "🌙" if self.current_theme == 'light' else "🌞"
+
+        # >>> ИЗМЕНЕНИЕ: Установка BG кнопки в цвет фона (bg)
         self.theme_button = tk.Button(
             top_frame,
             text=theme_icon,
             font=('Segoe UI Emoji', 16),
-            bg=self.theme['surface'],
+            bg=self.theme['bg'],  # <-- ИЗМЕНЕНО с self.theme['surface']
             fg=self.theme['fg'],
             relief=tk.FLAT,
             borderwidth=0,
@@ -305,12 +331,17 @@ class DiskTiderGUI(tk.Frame):
             height=1,
         )
         self.theme_button.pack(side="right", padx=(0, 4))
+
         def theme_btn_enter(e):
             self.theme_button.config(bg=self.theme['hover'])
+
         def theme_btn_leave(e):
-            self.theme_button.config(bg=self.theme['surface'])
+            # >>> ИЗМЕНЕНИЕ: Возвращаем кнопку в цвет фона (bg)
+            self.theme_button.config(bg=self.theme['bg'])
+
         self.theme_button.bind('<Enter>', theme_btn_enter)
         self.theme_button.bind('<Leave>', theme_btn_leave)
+
         separator1 = tk.Frame(self, height=1, bg=self.theme['border'])
         separator1.pack(fill="x", padx=20, pady=15)
         dir_section = tk.Frame(self, bg=self.theme['bg'])
@@ -400,9 +431,11 @@ class DiskTiderGUI(tk.Frame):
         self.tree_container.pack(fill="both", expand=True, padx=20, pady=(0, 10))
         scrollbar = ttk.Scrollbar(self.tree_container)
         scrollbar.pack(side="right", fill="y")
+
+        # Добавлен новый столбец 'Risk'
         self.tree = ttk.Treeview(
             self.tree_container,
-            columns=('Status', 'Size', 'Path'),
+            columns=('Status', 'Risk', 'Size', 'Path'),
             show='tree headings',
             style="Custom.Treeview",
             yscrollcommand=scrollbar.set
@@ -411,27 +444,39 @@ class DiskTiderGUI(tk.Frame):
         scrollbar.config(command=self.tree.yview)
         self.tree.heading('#0', text='Группа')
         self.tree.heading('Status', text='Действие')
+        self.tree.heading('Risk', text='Риск')
         self.tree.heading('Size', text='Размер')
         self.tree.heading('Path', text='Путь')
+
         self.tree.column('#0', width=150, minwidth=100)
         self.tree.column('Status', width=100, minwidth=80, anchor='center')
+        self.tree.column('Risk', width=70, minwidth=50, anchor='center')
         self.tree.column('Size', width=100, minwidth=80)
-        self.tree.column('Path', width=500, minwidth=200)
+        self.tree.column('Path', width=450, minwidth=200)
+
         self.tree.bind('<Double-1>', self._toggle_status)
         self.tree.tag_configure('keep', foreground=self.theme['success'])
         self.tree.tag_configure('delete', foreground=self.theme['danger'])
         self.tree.tag_configure('group', font=('Segoe UI', 10, 'bold'))
         self._setup_treeview_hover()
+
+        # Нижняя панель
         bottom_frame = tk.Frame(self, bg=self.theme['bg'])
         bottom_frame.pack(fill="x", padx=20, pady=(0, 20))
+
+        # Обновление safety_label для необратимого удаления
+        safety_text = "⚠️ УДАЛЕНИЕ БУДЕТ НЕОБРАТИМЫМ!"
+        safety_color = self.theme['danger']
+
         safety_label = tk.Label(
             bottom_frame,
-            text="⚠️ Удаление необратимо",
-            font=('Segoe UI', 9),
+            text=safety_text,
+            font=('Segoe UI', 9, 'bold'),
             bg=self.theme['bg'],
-            fg=self.theme['danger']
+            fg=safety_color
         )
         safety_label.pack(side="left")
+
         self.delete_button = ModernButton(
             bottom_frame,
             text="🗑 Удалить выбранные",
@@ -512,8 +557,10 @@ class DiskTiderGUI(tk.Frame):
         self.delete_button.config(state=tk.DISABLED)
         self.tree.delete(*self.tree.get_children())
         extensions = MUSIC_EXTENSIONS if self.music_var.get() else None
+
         recursive = self.recursive_var.get()
         scan_thread = threading.Thread(target=self._run_scan, args=(directory, extensions, recursive), daemon=True)
+
         scan_thread.start()
         self.save_settings()
 
@@ -536,8 +583,27 @@ class DiskTiderGUI(tk.Frame):
         total_space = 0
         if duplicates:
             self.logger.debug("GUI: Заполнение Treeview дубликатами")
-            for i, (file_hash, files) in enumerate(duplicates.items(), 1):
+
+            # СОРТИРОВКА ГРУПП ПО РАЗМЕРУ ФАЙЛА-ОРИГИНАЛА (ПО УБЫВАНИЮ)
+            processed_groups = []
+            for file_hash, files in duplicates.items():
+                # 1. Сортируем файлы в группе по приоритету, чтобы определить "оригинал"
+                files_sorted_by_priority = sorted(files, key=lambda x: get_file_priority(x['name']))
+
+                # 2. Размер файла, который будет сохранен (самый высокий приоритет)
+                keep_size = files_sorted_by_priority[0]['size'] if files_sorted_by_priority else 0
+
+                # Сохраняем данные группы и ключ сортировки
+                processed_groups.append((file_hash, files, keep_size))
+
+            # 3. Сортируем группы по размеру (keep_size) по убыванию (самые большие первыми)
+            processed_groups.sort(key=lambda x: x[2], reverse=True)
+
+            # --- Начало итерации по ОТСОРТИРОВАННЫМ группам ---
+            for i, (file_hash, files, keep_size) in enumerate(processed_groups, 1):
+                # На этом этапе, files - это список файлов, который нужно отсортировать для отображения
                 files_sorted = sorted(files, key=lambda x: get_file_priority(x['name']))
+
                 group_size = format_size(files_sorted[0]['size'])
                 wasted_space = files_sorted[0]['size'] * (len(files_sorted) - 1)
                 total_space += wasted_space
@@ -545,22 +611,34 @@ class DiskTiderGUI(tk.Frame):
                     '',
                     tk.END,
                     text=f"Группа {i}",
-                    values=('', group_size, f"{len(files_sorted)} файлов • {format_size(wasted_space)} лишнего"),
+                    values=('', '', group_size, f"{len(files_sorted)} файлов • {format_size(wasted_space)} лишнего"),
                     tags=('group',),
                     open=False
                 )
                 for j, file_info in enumerate(files_sorted):
                     status = "Сохранить" if j == 0 else "Удалить"
-                    tag = 'keep' if j == 0 else 'delete'
+                    tag_status = 'keep' if j == 0 else 'delete'
+
+                    # Проверка и маркировка риска
+                    risk_status = self._check_file_risk(file_info['path'])
+                    risk_indicator = "🚨 РИСК" if risk_status == 'RISK' else "🟢 ОК"
+                    tag_risk = 'risk' if risk_status == 'RISK' else ''
+
+                    # tags: (tag_risk, tag_status, file_hash, size_bytes)
+                    final_tags = (tag_risk, tag_status, file_hash, str(file_info['size']))
+
                     if j > 0:
                         total_duplicates += 1
+
                     self.tree.insert(
                         group_id,
                         tk.END,
                         text='',
-                        values=(status, format_size(file_info['size']), file_info['path']),
-                        tags=(tag, file_hash, str(file_info['size']))
+                        values=(status, risk_indicator, format_size(file_info['size']), file_info['path']),
+                        tags=final_tags
                     )
+            # --- Конец итерации ---
+
         if total_duplicates > 0:
             status_text = f"✓ Найдено: {len(duplicates)} групп • {total_duplicates} дубликатов • {format_size(total_space)} можно освободить"
             if self.permission_errors > 0:
@@ -604,17 +682,22 @@ class DiskTiderGUI(tk.Frame):
         values = list(self.tree.item(item_id, 'values'))
         values[0] = new_status
         tags = self.tree.item(item_id, 'tags')
-        self.tree.item(item_id, values=values, tags=(new_tag, tags[1], tags[2]))
+
+        updated_tags = list(tags)
+        updated_tags[1] = new_tag
+
+        self.tree.item(item_id, values=values, tags=updated_tags)
 
     def _start_delete_thread(self):
         files_to_delete = []
         for group_id in self.tree.get_children():
             for item_id in self.tree.get_children(group_id):
-                status, size_str_formatted, path = self.tree.item(item_id, 'values')
+                status, risk_indicator, size_str_formatted, path = self.tree.item(item_id, 'values')
                 tags = self.tree.item(item_id, 'tags')
                 if status == "Удалить":
                     try:
-                        size_bytes = int(tags[2])
+                        # Размер хранится в tags[3]
+                        size_bytes = int(tags[3])
                     except (IndexError, ValueError):
                         self.logger.error(f"Ошибка извлечения размера для {path}. Пропуск.")
                         continue
@@ -626,14 +709,19 @@ class DiskTiderGUI(tk.Frame):
         if not files_to_delete:
             messagebox.showinfo("Информация", "Нет файлов для удаления")
             return
+
         total_size = sum(f['size'] for f in files_to_delete)
+
+        # Текст подтверждения только для необратимого удаления
         confirm_text = (
             f"Удалить {len(files_to_delete)} файлов?\n"
             f"Будет освобождено: {format_size(total_size)}\n\n"
             f"⚠️ УДАЛЕНИЕ БУДЕТ НЕОБРАТИМЫМ!"
         )
+
         if not messagebox.askyesno("Подтверждение", confirm_text):
             return
+
         self.status_var.set("🗑 Удаление файлов...")
         self.delete_button.config(state=tk.DISABLED)
         self.scan_button.config(state=tk.DISABLED)
@@ -655,6 +743,7 @@ class DiskTiderGUI(tk.Frame):
         self.duplicates_data = {}
         self.delete_button.config(state=tk.DISABLED)
         self.scan_button.config(state=tk.NORMAL)
+
 
 class StatusGlow:
     def __init__(self, app_gui, status_frame, start_color, end_color):

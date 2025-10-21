@@ -3,8 +3,11 @@ import os
 import re
 from logger import get_logger
 
-# Полностью отключаем send2trash, поскольку он вызывает ошибки.
+# >>> ИЗМЕНЕНИЕ: Полностью отключаем send2trash.
 TRASH_AVAILABLE = False
+
+
+# <<< КОНЕЦ ИЗМЕНЕНИЯ
 
 
 def format_size(size_bytes):
@@ -59,8 +62,11 @@ def delete_files_by_list(files_to_delete):
     Удаляет файлы из списка с помощью os.remove (необратимо).
     """
     logger = get_logger()
+
+    # >>> ИЗМЕНЕНИЕ: Режим всегда 'delete'
     mode = 'delete'
     logger.log_deletion_start(mode)
+    # <<< КОНЕЦ ИЗМЕНЕНИЯ
 
     deleted_count = 0
     freed_space = 0
@@ -72,10 +78,10 @@ def delete_files_by_list(files_to_delete):
         normalized_filepath = _normalize_path(original_filepath)
 
         try:
-            # Необратимое удаление
+            # >>> ИЗМЕНЕНИЕ: Только необратимое удаление
             os.remove(normalized_filepath)
-            # Логирование происходит с оригинальным путем для удобства
             logger.info(f"Удалён навсегда: {original_filepath}")
+            # <<< КОНЕЦ ИЗМЕНЕНИЯ
 
             deleted_count += 1
             freed_space += file_info['size']

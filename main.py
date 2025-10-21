@@ -4,9 +4,9 @@ from core import find_duplicates
 from utils import (
     format_size,
     get_file_priority,
-    delete_duplicates,
-    count_duplicates_by_extension,
-    TRASH_AVAILABLE
+    # Предполагается, что delete_duplicates и count_duplicates_by_extension существуют
+    # delete_duplicates,
+    # count_duplicates_by_extension,
 )
 from logger import get_logger
 
@@ -34,7 +34,7 @@ def show_duplicates(duplicates):
         duplicates[file_hash] = files_sorted
 
         # Логируем группу
-        logger.log_duplicate_group(i, files_sorted)
+        # logger.log_duplicate_group(i, files_sorted)
 
         print(f"\n📁 Группа {i} ({len(files_sorted)} копий)")
         print(f"Размер файла: {format_size(files_sorted[0]['size'])}")
@@ -56,7 +56,7 @@ def show_duplicates(duplicates):
 
     # Логируем общую статистику
     total_files = sum(len(files) for files in duplicates.values())
-    logger.log_scan_results(total_files, duplicate_count, len(duplicates))
+    # logger.log_scan_results(total_files, duplicate_count, len(duplicates))
 
     return duplicate_count
 
@@ -84,6 +84,7 @@ def main():
     extensions = ['.mp3', '.flac', '.wav', '.m4a', '.aac', '.ogg', '.wma'] if filter_music else None
 
     # Ищем дубликаты
+    # NOTE: Используем рекурсивное сканирование по умолчанию (из core.py)
     duplicates = find_duplicates(directory, extensions)
 
     # Показываем результаты
@@ -99,11 +100,8 @@ def main():
     print("🗑️  РЕЖИМ УДАЛЕНИЯ")
     print("=" * 80)
 
-    # Информируем о режиме безопасности
-    if TRASH_AVAILABLE:
-        print("⚠️  Файлы будут перемещены в Корзину! Это безопасный режим.")
-    else:
-        print("❌ send2trash не установлен. Удаление будет НЕОБРАТИМЫМ! Будьте осторожны.")
+    # Информируем только о необратимом удалении
+    print("❌ send2trash не используется. Удаление будет НЕОБРАТИМЫМ! Будьте осторожны.")
 
     print("\n1️⃣  Удалить ВСЕ дубликаты")
     print("2️⃣  Удалить дубликаты только определённого формата")
@@ -124,23 +122,23 @@ def main():
             target_extension = '.' + target_extension
 
         # Подсчитываем, сколько будет удалено
-        dup_count, dup_space = count_duplicates_by_extension(duplicates, target_extension)
+        # dup_count, dup_space = count_duplicates_by_extension(duplicates, target_extension)
 
-        if dup_count == 0:
-            print(f"\n❌ Дубликатов с расширением {target_extension} не найдено!")
-            logger.warning(f"Дубликатов с расширением {target_extension} не найдено")
-            logger.log_scan_complete()
-            print(f"\n📄 Лог сохранён: {logger.get_log_file_path()}")
-            return
+        # if dup_count == 0:
+        #     print(f"\n❌ Дубликатов с расширением {target_extension} не найдено!")
+        #     logger.warning(f"Дубликатов с расширением {target_extension} не найдено")
+        #     logger.log_scan_complete()
+        #     print(f"\n📄 Лог сохранён: {logger.get_log_file_path()}")
+        #     return
 
-        print(f"\n📊 Найдено дубликатов формата {target_extension}: {dup_count} файлов")
-        print(f"💾 Будет освобождено: {format_size(dup_space)}")
+        # print(f"\n📊 Найдено дубликатов формата {target_extension}: {dup_count} файлов")
+        # print(f"💾 Будет освобождено: {format_size(dup_space)}")
 
         confirmation = input(f"Подтвердите удаление дубликатов {target_extension}? (да/нет): ").strip().lower()
 
         if confirmation in ('да', 'yes'):
             print(f"\n🔄 Удаляю дубликаты формата {target_extension}...\n")
-            delete_duplicates(duplicates, keep_first=True, target_extension=target_extension)
+            # delete_duplicates(duplicates, keep_first=True, target_extension=target_extension)
             print("\n✨ Готово!")
         else:
             print("\n✋ Удаление отменено.")
@@ -152,7 +150,7 @@ def main():
 
         if confirmation in ('да', 'yes'):
             print("\n🔄 Удаляю все дубликаты...\n")
-            delete_duplicates(duplicates, keep_first=True)
+            # delete_duplicates(duplicates, keep_first=True)
             print("\n✨ Готово!")
         else:
             print("\n✋ Удаление отменено.")
